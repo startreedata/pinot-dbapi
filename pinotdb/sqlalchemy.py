@@ -142,11 +142,6 @@ def extract_table_name(fqn):
     return fqn if len(split) == 1 else split[1]
 
 
-def mask_value(key, value, sensitive_keys):
-    if key in sensitive_keys:
-        return 'xxxxxx'
-    return value
-
 
 class PinotAsyncAdaptDBAPIModule:
     def __init__(self, dbapi_module):

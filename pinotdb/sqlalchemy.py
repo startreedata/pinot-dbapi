@@ -142,11 +142,6 @@ def extract_table_name(fqn):
     return fqn if len(split) == 1 else split[1]
 
 
-def mask_value(key, value, sensitive_keys):
-    if key in sensitive_keys:
-        return 'xxxxxx'
-    return value
-
 
 class PinotAsyncAdaptDBAPIModule:
     def __init__(self, dbapi_module):
@@ -377,18 +372,11 @@ class PinotDialect(default.DefaultDialect):
             else None
         )
         logger.info(
-            "Updated pinot dialect args from %s: %s and %s",
-            dict(
-                map(
-                    lambda kv: (
-                        kv[0],
-                        mask_value(kv[0], kv[1], ['password']),
-                    ),
-                    kwargs.items(),
-                )
-            ),
-            self._controller,
+            "Updated pinot dialect options: debug=%s, verify_ssl=%s, timeout=%s, database_set=%s",
             self._debug,
+            self._verify_ssl,
+            self._timeout,
+            self._database is not None,
         )
         return kwargs
 

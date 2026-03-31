@@ -98,6 +98,6 @@ jobs:
           fi
       - name: Upload Coverage to Codecov
         if: ${{ matrix.python-version == '3.12' }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

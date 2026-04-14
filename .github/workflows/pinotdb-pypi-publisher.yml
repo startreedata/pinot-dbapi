@@ -133,7 +133,7 @@ jobs:
           git push origin "HEAD:${{ github.event.inputs.ref }}"
           git push origin "${{ steps.release.outputs.release_tag }}"
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release.outputs.release_tag }}
           name: Release ${{ steps.release.outputs.release_tag }}

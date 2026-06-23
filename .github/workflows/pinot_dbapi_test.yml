@@ -47,7 +47,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     name: Pinot DB API Integration Test Set
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Pull Pinot Docker Image
         uses: ./.github/actions/pull-docker-image
         with:
@@ -82,7 +82,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     name: Pinot DB API Unit Test Set
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:

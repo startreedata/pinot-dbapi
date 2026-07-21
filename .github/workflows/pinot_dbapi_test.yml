@@ -60,7 +60,7 @@ jobs:
           broker-forward-port: 8000
           arguments: QuickStart -type MULTI_STAGE
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Setup Python Test Env
@@ -84,7 +84,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Setup Python Test Env

@@ -56,7 +56,7 @@ jobs:
           echo "Commit: $(git rev-parse HEAD)"
           echo "Message: $(git log -1 --pretty=format:'%s')"
       - name: Set up Python 3.10
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
       - name: Install Poetry

@@ -92,6 +92,14 @@ class ConnectionTest(TestCase):
 
         self.assertIsNot(session1, session2)
 
+    def test_cursor_doesnt_close_session_for_other_cursors(self):
+        connection = db.Connection(host='localhost')
+        cursor1 = connection.cursor()
+        cursor2 = connection.cursor()
+        cursor1.close()
+
+        self.assertFalse(cursor2.session.is_closed)
+
     def test_starts_not_closed(self):
         connection = db.Connection(
             host='localhost', session=MagicMock(spec=httpx.Client))
@@ -236,6 +244,14 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
 
         self.assertTrue(cursor.closed)
 
+    async def test_cursor_doesnt_close_session_for_other_cursors(self):
+        connection = db.AsyncConnection(host='localhost')
+        cursor1 = connection.cursor()
+        cursor2 = connection.cursor()
+        await cursor1.close()
+
+        self.assertFalse(cursor2.session.is_closed)
+
     async def test_renews_session_if_closed_when_getting_cursor(self):
         connection = db.AsyncConnection(host='localhost')
         connection.cursor()
@@ -378,12 +394,12 @@ class CursorTest(TestCase):
         with self.assertRaises(exceptions.Error):
             cursor.close()
 
-    def test_closes_underlying_session_as_well(self):
+    def test_doesnt_close_underlying_session_as_well(self):
         cursor = db.Cursor(host='localhost', session=httpx.Client())
 
         cursor.close()
 
-        self.assertTrue(cursor.session.is_closed)
+        self.assertFalse(cursor.session.is_closed)
 
     def test_bypasses_session_close_if_already_closed(self):
         cursor = db.Cursor(host='localhost', session=httpx.Client())

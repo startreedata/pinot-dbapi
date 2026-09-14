@@ -541,7 +541,7 @@ class PinotTypeCompilerTest(PinotTestCase):
         self.assertEqual(self.compiler.visit_BOOLEAN(None), 'NUMERIC')
 
     def test_compiles_timestamp(self):
-        self.assertEqual(self.compiler.visit_TIMESTAMP(None), 'NUMERIC')
+        self.assertEqual(self.compiler.visit_TIMESTAMP(None), 'TIMESTAMP')
 
     def test_compiles_date(self):
         self.assertEqual(self.compiler.visit_DATE(None), 'NUMERIC')

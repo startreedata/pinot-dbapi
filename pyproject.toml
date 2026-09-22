@@ -34,7 +34,7 @@ flake8 = ">=5,<8"
 mock = ">=4.0.3,<6.0.0"
 responses = ">=0.22,<0.27"
 ipdb = "^0.13.13"
-filelock = "^3.20.1"
+filelock = ">=3.20.1,<5.0.0"
 
 [tool.pytest.ini_options]
 addopts = "--cov=pinotdb --cov-branch"

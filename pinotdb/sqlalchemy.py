@@ -78,7 +78,6 @@ class PinotTypeCompiler(compiler.GenericTypeCompiler):
     visit_SMALLINT = visit_NUMERIC
     visit_BIGINT = visit_NUMERIC
     visit_BOOLEAN = visit_NUMERIC
-    visit_TIMESTAMP = visit_NUMERIC
     visit_DATE = visit_NUMERIC
 
     def visit_CHAR(self, type_, **kwargs):
@@ -96,6 +95,8 @@ class PinotTypeCompiler(compiler.GenericTypeCompiler):
 
     def visit_DATETIME(self, type_, **kwargs):
         return "TIMESTAMP"
+
+    visit_TIMESTAMP = visit_DATETIME
 
     def visit_TIME(self, type_, **kwargs):
         raise exceptions.NotSupportedError("Type TIME is not supported")

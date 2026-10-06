@@ -50,6 +50,11 @@ async def run_async() -> None:
         show_evidence(result)
 
 
+def run_main() -> None:
+    """Run the sync example when called by the integration example runner."""
+    run_sync()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -60,4 +65,4 @@ if __name__ == "__main__":
     if arguments.use_async:
         asyncio.run(run_async())
     else:
-        run_sync()
+        run_main()

@@ -41,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          token: ${{ secrets.RELEASE_PAT }}
+          token: ${{ github.token }}
           ref: ${{ github.event.inputs.ref }}
           fetch-depth: 0
       - name: Validate release ref
@@ -142,7 +142,7 @@ jobs:
           prerelease: ${{ contains(steps.release.outputs.pinotdb_version, '-') }}
           generate_release_notes: true
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Publish to PyPI
         env:
           PYPI_USERNAME: ${{ secrets.PYPI_USERNAME }}

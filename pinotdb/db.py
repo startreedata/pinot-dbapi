@@ -14,6 +14,7 @@ import httpx
 from urllib import parse
 
 from pinotdb import exceptions
+from pinotdb.native import NativeQueryResult, decode_query_response
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,14 @@ def get_query_stats(payload):
         key: value for key, value in payload.items()
         if key not in _QUERY_STATS_EXCLUDED_FIELDS
         and not isinstance(value, (dict, list))
+    }
+
+
+def get_query_statistics(payload):
+    """Return broker query statistics, including nested stage statistics."""
+    return {
+        key: value for key, value in payload.items()
+        if key not in _QUERY_STATS_EXCLUDED_FIELDS
     }
 
 
@@ -278,6 +287,8 @@ class AsyncConnection(Connection):
 
 
 def convert_result_if_required(data_types, rows):
+    # Fetch operations and type conversion must not mutate the native payload.
+    rows = [list(row) for row in rows]
     needs_conversion = any(t.needs_conversion for t in data_types)
     if not needs_conversion:
         return rows
@@ -345,6 +356,8 @@ class Cursor:
         self._results = None
         self.raw_query_response = None
         self.query_stats = {}
+        self.query_statistics = {}
+        self.native_result = None
         self.timeUsedMs = -1
         self._debug = debug
         self._preserve_types = preserve_types
@@ -423,13 +436,50 @@ class Cursor:
         else:
             return {"sql": query}
 
+    def _prepare_query_request(
+            self, operation, parameters, query_options, request_options
+    ):
+        self.description = None
+        self.schema = None
+        self.rowcount = -1
+        self._results = None
+        self.raw_query_response = None
+        self.query_stats = {}
+        self.query_statistics = {}
+        self.native_result = None
+        self.timeUsedMs = -1
+
+        if not query_options:
+            query_options = ""
+        if self._query_options:
+            query_options = query_options + ";" + self._query_options
+        query = self.finalize_query_payload(
+            operation, parameters, query_options)
+
+        options = dict(request_options)
+        headers = {"X-Correlation-Id": str(uuid.uuid4())}
+        for key, value in httpx.Headers(options.pop("headers", {})).items():
+            if key == "x-correlation-id":
+                key = "X-Correlation-Id"
+            headers[key] = value
+        options["headers"] = headers
+        if self.auth and self.auth._username and self.auth._password:
+            options.setdefault(
+                "auth", (self.auth._username, self.auth._password))
+        return query, options
+
+    def _record_query_response(self, payload, status_code):
+        self.raw_query_response = {
+            "response": payload, "status_code": status_code}
+        if isinstance(payload, dict):
+            self.query_stats = get_query_stats(payload)
+            self.query_statistics = get_query_statistics(payload)
+            self.timeUsedMs = self.query_stats.get("timeUsedMs", -1)
+
     def normalize_query_response(self, input_query, query_response):
         try:
             payload = query_response.json()
-            self.raw_query_response = {
-                "response": payload,
-                "status_code": query_response.status_code,
-            }
+            self._record_query_response(payload, query_response.status_code)
         except Exception as e:
             self.raw_query_response = {
                 "response": query_response.text,
@@ -448,7 +498,6 @@ class Cursor:
                 f"with the status code {status_code}:\n{payload}"
             )
 
-        self.query_stats = get_query_stats(payload)
         num_servers_responded = self.query_stats.get("numServersResponded", -1)
         num_servers_queried = self.query_stats.get("numServersQueried", -1)
         self.timeUsedMs = self.query_stats.get("timeUsedMs", -1)
@@ -514,36 +563,58 @@ class Cursor:
                 column_names, column_data_types)
         return self
 
+    def _normalize_native_response(self, query, response, allow_partial):
+        try:
+            payload = response.json()
+        except Exception as error:
+            self._record_query_response(response.text, response.status_code)
+            response.raise_for_status()
+            raise exceptions.DataError(
+                "Pinot returned malformed native query response.") from error
+
+        self._record_query_response(payload, response.status_code)
+        response.raise_for_status()
+        result = decode_query_response(payload, sql=query["sql"])
+        # The decoder snapshots native evidence independently. Keep the parsed
+        # compatibility views separate so caller mutation cannot corrupt it.
+        self.native_result = result
+        if not allow_partial and (
+                result.metadata.completeness != "complete"
+                or result.exceptions):
+            error = exceptions.DatabaseError(
+                "Pinot native query response is incomplete; "
+                "pass allow_partial=True to inspect native evidence.")
+            error.native_result = result
+            raise error
+        return result
+
     @check_closed
     # TODO: Rename queryOptions to query_options when releasing a breaking
     #  version - even though Pinot understands "queryOptions", we don't need
     #  to follow the same camel casing convention, but rather should stick
     #  to PEP-8 instead.
     def execute(self, operation, parameters=None, queryOptions=None, **kwargs):
-        if not queryOptions:
-            queryOptions = ""
-        if self._query_options:
-            queryOptions = queryOptions + ";" + self._query_options
-
-        query = self.finalize_query_payload(
-            operation, parameters, queryOptions)
-
-        correlation_id = str(uuid.uuid4())
-        if self.auth and self.auth._username and self.auth._password:
-            r = self.session.post(
-                self.url,
-                json=query,
-                headers={"X-Correlation-Id": correlation_id},
-                auth=(self.auth._username, self.auth._password),
-                **kwargs)
-        else:
-            r = self.session.post(
-                self.url,
-                json=query,
-                headers={"X-Correlation-Id": correlation_id},
-                **kwargs)
-
+        query, options = self._prepare_query_request(
+            operation, parameters, queryOptions, kwargs)
+        r = self.session.post(self.url, json=query, **options)
         return self.normalize_query_response(query, r)
+
+    @check_closed
+    def execute_native(
+            self, operation, parameters=None, query_options=None, *,
+            allow_partial=False, **request_options
+    ) -> NativeQueryResult:
+        """Submit one query and return its unconverted native evidence.
+
+        Partial or unknown completeness raises ``DatabaseError`` with a
+        ``native_result`` attribute unless ``allow_partial=True``. HTTP errors
+        raise ``httpx.HTTPStatusError``. Fetch methods belong to ``execute``;
+        native rows are returned in the result instead.
+        """
+        query, options = self._prepare_query_request(
+            operation, parameters, query_options, request_options)
+        response = self.session.post(self.url, json=query, **options)
+        return self._normalize_native_response(query, response, allow_partial)
 
     @check_closed
     def executemany(self, operation, seq_of_parameters=None):
@@ -624,30 +695,21 @@ class AsyncCursor(Cursor):
     async def execute(
             self, operation, parameters=None, queryOptions=None, **kwargs
     ):
-        if not queryOptions:
-            queryOptions = ""
-        if self._query_options:
-            queryOptions = queryOptions + ";" + self._query_options
-
-        query = self.finalize_query_payload(
-            operation, parameters, queryOptions)
-
-        correlation_id = str(uuid.uuid4())
-        if self.auth and self.auth._username and self.auth._password:
-            r = await self.session.post(
-                self.url,
-                json=query,
-                headers={"X-Correlation-Id": correlation_id},
-                auth=(self.auth._username, self.auth._password),
-                **kwargs)
-        else:
-            r = await self.session.post(
-                self.url,
-                json=query,
-                headers={"X-Correlation-Id": correlation_id},
-                **kwargs)
-
+        query, options = self._prepare_query_request(
+            operation, parameters, queryOptions, kwargs)
+        r = await self.session.post(self.url, json=query, **options)
         return self.normalize_query_response(query, r)
+
+    @check_closed
+    async def execute_native(
+            self, operation, parameters=None, query_options=None, *,
+            allow_partial=False, **request_options
+    ) -> NativeQueryResult:
+        """Async equivalent of ``Cursor.execute_native``; no retries."""
+        query, options = self._prepare_query_request(
+            operation, parameters, query_options, request_options)
+        response = await self.session.post(self.url, json=query, **options)
+        return self._normalize_native_response(query, response, allow_partial)
 
     @check_closed
     async def close(self):

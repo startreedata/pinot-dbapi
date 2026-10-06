@@ -67,7 +67,7 @@ print(curs.timeUsedMs)  # Backward compatible shorthand
 ```
 
 `cursor.query_stats` contains scalar top-level metrics returned by the broker
-for the latest `execute()` call (works for both sync and async cursors).
+for the latest `execute()` or `execute_native()` call (sync and async).
 Common keys include:
 
 - `numServersQueried`
@@ -85,9 +85,69 @@ Common keys include:
 - `minConsumingFreshnessTimeMs`
 - `numSegmentsPrunedByBroker`
 
-If you need the full broker payload (including nested sections such as
-`resultTable`, `exceptions`, and tracing information), use
-`cursor.raw_query_response`.
+`cursor.query_statistics` also retains nested and list-valued statistics such
+as `stageStats`, `earlyTerminationReasons`, `tablesQueried`, and future broker
+metrics. Both statistics dictionaries exclude result rows, query errors, and
+`traceInfo`. For the full payload, use
+`cursor.raw_query_response["response"]`.
+
+### Native query results (9.2+)
+
+`execute_native()` returns a `NativeQueryResult` with column names, native column
+types, row arrays, exceptions, and typed execution metadata. TIMESTAMP and JSON
+values retain their native strings; duplicate column aliases remain separate
+columns. Read `result.rows` directly: `fetchall()` belongs to the DB-API
+`execute()` path.
+
+```python
+import httpx
+from pinotdb import connect
+
+sql = "SELECT playerID, yearID FROM baseballStats WHERE yearID >= %(year)s LIMIT 5"
+with connect(host="localhost", port=8000) as cursor:
+    result = cursor.execute_native(
+        sql,
+        {"year": 2010},
+        query_options="timeoutMs=4000;clientQueryId=example-native",
+        timeout=httpx.Timeout(5.0, connect=1.0),
+    )
+    print(result.metadata.completeness, result.columns, len(result.rows))
+    stage_stats = cursor.query_statistics.get("stageStats", {})
+    native_payload = result.raw_response
+```
+
+By default, partial or unknown execution raises `DatabaseError`; its
+`native_result` attribute retains the decoded evidence. To inspect that evidence
+without rejecting partial execution, pass `allow_partial=True` and check both
+`result.metadata.completeness` and `result.exceptions` before using the rows:
+
+```python
+with connect(host="localhost", port=8000) as cursor:
+    result = cursor.execute_native(sql, {"year": 2010}, allow_partial=True)
+    print(result.metadata.unknown_reasons)
+    print(result.metadata.execution_limit_flags)
+```
+
+The async API has the same arguments and result:
+
+```python
+from pinotdb import connect_async
+
+async def query_native():
+    async with connect_async(host="localhost", port=8000) as cursor:
+        return await cursor.execute_native(
+            sql, {"year": 2010}, allow_partial=True,
+            timeout=httpx.Timeout(5.0, connect=1.0),
+        )
+```
+
+Missing result tables or required metadata remain `unknown`; a complete empty
+result retains its schema. Complete execution describes the submitted SQL, not
+full dataset coverage or rows beyond its LIMIT. Per-call HTTPX timeouts bound
+network phases; they do not guarantee an overall deadline or native cancellation.
+Native calls do not retry automatically. See
+[the runnable sync/async example](examples/native_query.py): run
+`python examples/native_query.py`, or add `--async` for the async cursor.
 
 #### Pass the Pinot database context
 

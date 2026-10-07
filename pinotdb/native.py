@@ -86,7 +86,8 @@ def _matches_type(value: Any, data_type: str) -> bool:
     if data_type in {"FLOAT", "DOUBLE"}:
         # Jackson encodes non-finite floating-point values as JSON strings.
         return type(value) in (int, float) or (
-            isinstance(value, str) and value in {"Infinity", "-Infinity", "NaN"}
+            isinstance(value, str)
+            and value in {"Infinity", "-Infinity", "NaN"}
         )
     if data_type == "BOOLEAN":
         return type(value) is bool

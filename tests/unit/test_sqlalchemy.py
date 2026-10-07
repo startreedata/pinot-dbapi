@@ -19,7 +19,7 @@ import json
 import responses
 from sqlalchemy import (
     BigInteger, Column, Integer, MetaData, String, Table,
-    column, func, select, text, types,
+    cast, column, func, select, text, types,
 )
 from sqlalchemy.dialects import registry
 from sqlalchemy.engine import make_url
@@ -541,7 +541,11 @@ class PinotTypeCompilerTest(PinotTestCase):
         self.assertEqual(self.compiler.visit_BOOLEAN(None), 'NUMERIC')
 
     def test_compiles_timestamp(self):
-        self.assertEqual(self.compiler.visit_TIMESTAMP(None), 'NUMERIC')
+        statement = cast(column('some_ts_col'), types.TIMESTAMP)
+        self.assertEqual(
+            str(statement.compile(dialect=self.dialect)),
+            'CAST(some_ts_col AS TIMESTAMP)',
+        )
 
     def test_compiles_date(self):
         self.assertEqual(self.compiler.visit_DATE(None), 'NUMERIC')

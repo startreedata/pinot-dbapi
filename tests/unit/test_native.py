@@ -154,6 +154,9 @@ def test_duplicate_aliases_remain_legal_array_results(payload):
     ("BIG_DECIMAL", "1.250"), ("BIG_DECIMAL", 1.25),
     ("JSON", '{"native": [1, true]}'),
     ("LONG_ARRAY", [1, None, 3]),
+    ("FLOAT", "Infinity"), ("DOUBLE", "-Infinity"),
+    ("FLOAT_ARRAY", ["NaN", "-Infinity"]),
+    ("DOUBLE_ARRAY", ["Infinity", "-Infinity", "NaN"]),
 ])
 def test_native_values_remain_json_without_dbapi_conversion(
     payload, data_type, value,
@@ -212,6 +215,8 @@ def test_malformed_width_shape_or_cell_type_fails(payload, rows):
     ("STRING", 7), ("BOOLEAN", 1), ("LONG_ARRAY", ["one"]),
     ("BIG_DECIMAL", "NaN"), ("DOUBLE", float("nan")),
     ("JSON", {"native": True}),
+    ("FLOAT", True), ("DOUBLE", "1.25"),
+    ("DOUBLE_ARRAY", ["NaN", "invalid"]),
 ])
 def test_malformed_primitive_types_fail(payload, data_type, value):
     payload["resultTable"]["dataSchema"]["columnDataTypes"] = [data_type]

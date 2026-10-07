@@ -1,4 +1,5 @@
 from pinotdb.db import connect, connect_async
+from pinotdb.native import NativeQueryMetadata, NativeQueryResult
 from pinotdb.exceptions import (
     DataError,
     DatabaseError,
@@ -16,6 +17,8 @@ from pinotdb.exceptions import (
 __all__ = [
     "connect",
     "connect_async",
+    "NativeQueryMetadata",
+    "NativeQueryResult",
     "apilevel",
     "threadsafety",
     "paramstyle",

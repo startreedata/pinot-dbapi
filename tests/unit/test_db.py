@@ -82,15 +82,38 @@ class ConnectionTest(TestCase):
         self.assertIsInstance(cursor, db.Cursor)
 
     def test_renews_session_if_closed_when_getting_cursor(self):
-        connection = db.Connection(host='localhost')
+        session1 = httpx.Client()
+        connection = db.Connection(host='localhost', session=session1)
         connection.cursor()
-        session1 = connection.session
 
         session1.close()
         connection.cursor()
         session2 = connection.session
 
-        self.assertIsNot(session1, session2)
+        try:
+            self.assertIsNot(session1, session2)
+            self.assertFalse(session2.is_closed)
+        finally:
+            connection.close()
+
+        self.assertTrue(session2.is_closed)
+
+    def test_cursor_doesnt_close_session_for_other_cursors(self):
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={'numServersResponded': 1, 'numServersQueried': 1}))
+        with httpx.Client(transport=transport) as session:
+            connection = db.Connection(host='localhost', session=session)
+            try:
+                cursor1 = connection.cursor()
+                cursor2 = connection.cursor()
+                cursor1.close()
+                cursor2.execute('SELECT 1')
+                self.assertEqual(cursor2.fetchall(), [])
+            finally:
+                connection.close()
+
+            self.assertTrue(cursor2.closed)
+            self.assertFalse(session.is_closed)
 
     def test_starts_not_closed(self):
         connection = db.Connection(
@@ -236,16 +259,39 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
 
         self.assertTrue(cursor.closed)
 
+    async def test_cursor_doesnt_close_session_for_other_cursors(self):
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={'numServersResponded': 1, 'numServersQueried': 1}))
+        async with httpx.AsyncClient(transport=transport) as session:
+            connection = db.AsyncConnection(host='localhost', session=session)
+            try:
+                cursor1 = connection.cursor()
+                cursor2 = connection.cursor()
+                await cursor1.close()
+                await cursor2.execute('SELECT 1')
+                self.assertEqual(cursor2.fetchall(), [])
+            finally:
+                await connection.close()
+
+            self.assertTrue(cursor2.closed)
+            self.assertFalse(session.is_closed)
+
     async def test_renews_session_if_closed_when_getting_cursor(self):
-        connection = db.AsyncConnection(host='localhost')
+        session1 = httpx.AsyncClient()
+        connection = db.AsyncConnection(host='localhost', session=session1)
         connection.cursor()
-        session1 = connection.session
 
         await session1.aclose()
         connection.cursor()
         session2 = connection.session
 
-        self.assertIsNot(session1, session2)
+        try:
+            self.assertIsNot(session1, session2)
+            self.assertFalse(session2.is_closed)
+        finally:
+            await connection.close()
+
+        self.assertTrue(session2.is_closed)
 
     async def test_closes_connection_even_if_cursor_already_closed(self):
         connection = db.AsyncConnection(
@@ -378,12 +424,13 @@ class CursorTest(TestCase):
         with self.assertRaises(exceptions.Error):
             cursor.close()
 
-    def test_closes_underlying_session_as_well(self):
-        cursor = db.Cursor(host='localhost', session=httpx.Client())
+    def test_doesnt_close_underlying_session_as_well(self):
+        with httpx.Client() as session:
+            cursor = db.Cursor(host='localhost', session=session)
 
-        cursor.close()
+            cursor.close()
 
-        self.assertTrue(cursor.session.is_closed)
+            self.assertFalse(session.is_closed)
 
     def test_bypasses_session_close_if_already_closed(self):
         cursor = db.Cursor(host='localhost', session=httpx.Client())

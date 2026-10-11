@@ -1,6 +1,7 @@
 import asyncio
 from functools import wraps
 from typing import Any
+from weakref import WeakSet
 
 import ciso8601
 import json
@@ -169,7 +170,7 @@ class Connection:
         self.closed = False
         self.use_multistage_engine = kwargs.get('use_multistage_engine', False)
         self.query_options = kwargs.get('query_options', None)
-        self.cursors = []
+        self.cursors = WeakSet()
         self.session = kwargs.get('session')
         self.is_session_external = False
         if self.session:
@@ -218,7 +219,7 @@ class Connection:
 
         self._kwargs['session'] = self.session
         cursor = Cursor(*self._args, **self._kwargs)
-        self.cursors.append(cursor)
+        self.cursors.add(cursor)
 
         return cursor
 
@@ -256,7 +257,7 @@ class AsyncConnection(Connection):
 
         self._kwargs['session'] = self.session
         cursor = AsyncCursor(*self._args, **self._kwargs)
-        self.cursors.append(cursor)
+        self.cursors.add(cursor)
 
         return cursor
 
@@ -273,7 +274,7 @@ class AsyncConnection(Connection):
 
         await asyncio.gather(*close_reqs)
         # if we're managing the httpx session, attempt to close it
-        if not self.is_session_external:
+        if not self.is_session_external and self.session:
             await self.session.aclose()
 
     @check_closed

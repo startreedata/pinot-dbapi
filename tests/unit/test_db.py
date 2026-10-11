@@ -1,5 +1,7 @@
 import datetime
+import gc
 import uuid
+import weakref
 from typing import Any, Dict, Optional
 from unittest import TestCase
 from unittest.mock import ANY, MagicMock, patch
@@ -115,6 +117,34 @@ class ConnectionTest(TestCase):
             self.assertTrue(cursor2.closed)
             self.assertFalse(session.is_closed)
 
+    def test_doesnt_retain_closed_cursor_results(self):
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={
+                'numServersResponded': 1, 'numServersQueried': 1,
+                'resultTable': {
+                    'dataSchema': {
+                        'columnNames': ['value'],
+                        'columnDataTypes': ['STRING']},
+                    'rows': [['value']]}}))
+        with httpx.Client(transport=transport) as session:
+            connection = db.Connection(host='localhost', session=session)
+            live_cursors = [connection.cursor(), connection.cursor()]
+            try:
+                cursor = connection.cursor()
+                cursor.execute('SELECT value FROM example')
+                self.assertEqual(cursor._results, [['value']])
+                cursor_ref = weakref.ref(cursor)
+                cursor.close()
+                del cursor
+                gc.collect()
+
+                self.assertIsNone(cursor_ref())
+            finally:
+                connection.close()
+
+            self.assertTrue(all(cursor.closed for cursor in live_cursors))
+            self.assertFalse(session.is_closed)
+
     def test_starts_not_closed(self):
         connection = db.Connection(
             host='localhost', session=MagicMock(spec=httpx.Client))
@@ -220,6 +250,13 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
         self.assertIsNone(connection.session)
         self.assertFalse(connection.is_session_external)
 
+    async def test_closes_connection_without_a_cursor(self):
+        connection = db.AsyncConnection()
+
+        await connection.close()
+
+        self.assertTrue(connection.closed)
+
     def test_verifies_httpx_session_upon_initializing_if_provided(self):
         client = httpx.AsyncClient()
 
@@ -274,6 +311,34 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
                 await connection.close()
 
             self.assertTrue(cursor2.closed)
+            self.assertFalse(session.is_closed)
+
+    async def test_doesnt_retain_closed_cursor_results(self):
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={
+                'numServersResponded': 1, 'numServersQueried': 1,
+                'resultTable': {
+                    'dataSchema': {
+                        'columnNames': ['value'],
+                        'columnDataTypes': ['STRING']},
+                    'rows': [['value']]}}))
+        async with httpx.AsyncClient(transport=transport) as session:
+            connection = db.AsyncConnection(host='localhost', session=session)
+            live_cursors = [connection.cursor(), connection.cursor()]
+            try:
+                cursor = connection.cursor()
+                await cursor.execute('SELECT value FROM example')
+                self.assertEqual(cursor._results, [['value']])
+                cursor_ref = weakref.ref(cursor)
+                await cursor.close()
+                del cursor
+                gc.collect()
+
+                self.assertIsNone(cursor_ref())
+            finally:
+                await connection.close()
+
+            self.assertTrue(all(cursor.closed for cursor in live_cursors))
             self.assertFalse(session.is_closed)
 
     async def test_renews_session_if_closed_when_getting_cursor(self):

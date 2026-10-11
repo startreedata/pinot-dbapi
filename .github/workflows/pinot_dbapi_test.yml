@@ -70,6 +70,23 @@ jobs:
         run: .github/scripts/setup_python_test_env.sh
       - name: Run Integration Tests
         run: make test-integration
+      - name: Capture QuickStart diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p quickstart-diagnostics
+          docker ps -a --no-trunc > quickstart-diagnostics/containers.txt 2>&1 || true
+          docker image inspect apachepinot/pinot:latest > quickstart-diagnostics/image.json 2>&1 || true
+          for CONTAINER_ID in $(docker ps -a -q --filter ancestor=apachepinot/pinot:latest); do
+            docker inspect "$CONTAINER_ID" > "quickstart-diagnostics/$CONTAINER_ID-inspect.json" 2>&1 || true
+            docker logs --timestamps "$CONTAINER_ID" > "quickstart-diagnostics/$CONTAINER_ID-logs.txt" 2>&1 || true
+          done
+      - name: Upload QuickStart diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quickstart-diagnostics-${{ matrix.python-version }}
+          path: quickstart-diagnostics/
       - name: Clean up
         if: always()
         shell: bash

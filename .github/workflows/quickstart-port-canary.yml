@@ -1,0 +1,66 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+name: Temporary QuickStart port canary
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/quickstart-port-canary.yml
+      - .github/scripts/quickstart-port-canary/**
+
+permissions:
+  contents: read
+
+jobs:
+  port-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {mode: baseline, python-version: "3.12"}
+          - {mode: patched, python-version: "3.10"}
+          - {mode: patched, python-version: "3.11"}
+          - {mode: patched, python-version: "3.12"}
+          - {mode: patched, python-version: "3.13"}
+          - {mode: patched, python-version: "3.14"}
+    name: Port canary ${{ matrix.mode }} Python ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Poetry
+        if: matrix.mode == 'patched'
+        run: python -m pip install poetry
+      - name: Assert controlled failure or full patched integration
+        env:
+          CANARY_MODE: ${{ matrix.mode }}
+        run: python .github/scripts/quickstart-port-canary/run.py "$CANARY_MODE"
+      - name: Retain canary evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: port-canary-${{ matrix.mode }}-${{ matrix.python-version }}
+          path: quickstart-port-canary/
+          if-no-files-found: error

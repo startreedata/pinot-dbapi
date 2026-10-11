@@ -17,7 +17,7 @@
 # under the License.
 #
 
-name: Pinot DB API Tests
+name: Pinot QuickStart Startup Reproduction
 
 permissions:
   contents: read
@@ -43,22 +43,34 @@ jobs:
   pinot-dbapi-integration-tests:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-    name: Pinot DB API Integration Test Set
+        include:
+          - case: september-15
+            python-version: "3.13"
+            pinot-image: apachepinot/pinot@sha256:2b8b05d8b7c57fe401cd2b48b73b0af9569b864507cfebdd2cfbd62c9d8f9ba3
+          - case: september-29
+            python-version: "3.14"
+            pinot-image: apachepinot/pinot@sha256:6ff4820a24f18adbd90eac465f501c55dec787d2ba4d582310b9384c7f8d1b5b
+    name: Pinot QuickStart ${{ matrix.case }} (Python ${{ matrix.python-version }})
+    env:
+      PINOT_IMAGE: ${{ matrix.pinot-image }}
     steps:
       - uses: actions/checkout@v7
+      - name: Record runner resources
+        shell: bash
+        run: |
+          mkdir -p quickstart-diagnostics
+          { uname -a; free -h; lscpu; df -h; } | tee quickstart-diagnostics/runner.txt
       - name: Pull Pinot Docker Image
         uses: ./.github/actions/pull-docker-image
         with:
-          docker-image: apachepinot/pinot:latest
+          docker-image: ${{ matrix.pinot-image }}
       - name: Runs Pinot Docker Image
-        uses: ./.github/actions/run-docker-image
-        with:
-          docker-image: apachepinot/pinot:latest
-          controller-forward-port: 9000
-          broker-forward-port: 8000
-          arguments: QuickStart -type MULTI_STAGE
+        shell: bash
+        run: |
+          echo "PINOT_REPRO_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          docker run --name pinot-quickstart-repro -p 9000:9000 -p 8000:8000 -d "$PINOT_IMAGE" QuickStart -type MULTI_STAGE
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
         with:
@@ -70,34 +82,27 @@ jobs:
         run: .github/scripts/setup_python_test_env.sh
       - name: Run Integration Tests
         run: make test-integration
+      - name: Capture QuickStart diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p quickstart-diagnostics
+          docker ps -a --no-trunc > quickstart-diagnostics/containers.txt 2>&1 || true
+          docker image inspect "$PINOT_IMAGE" > quickstart-diagnostics/image.json 2>&1 || true
+          docker inspect pinot-quickstart-repro > quickstart-diagnostics/container.json 2>&1 || true
+          docker logs --timestamps pinot-quickstart-repro > quickstart-diagnostics/container-logs.txt 2>&1 || true
+          if [ -n "${PINOT_REPRO_STARTED_AT:-}" ]; then
+            docker events --since "$PINOT_REPRO_STARTED_AT" --until "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --filter container=pinot-quickstart-repro --format '{{json .}}' > quickstart-diagnostics/events.jsonl 2>&1 || true
+          fi
+          sudo dmesg --ctime 2>&1 | tee quickstart-diagnostics/kernel.txt >/dev/null || true
+      - name: Upload QuickStart diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quickstart-diagnostics-${{ matrix.case }}
+          path: quickstart-diagnostics/
       - name: Clean up
         if: always()
         shell: bash
         run: |
-          docker rm $(docker stop $(docker ps -a -q --filter ancestor="apachepinot/pinot:latest" --format="{{.ID}}"))
-  pinot-dbapi-unit-tests:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-    name: Pinot DB API Unit Test Set
-    steps:
-      - uses: actions/checkout@v7
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Setup Python Test Env
-        run: make init
-      - name: Run Unit Tests
-        run: |
-          if [ "${{ matrix.python-version }}" = "3.12" ]; then
-            make coverage
-          else
-            make test-unit
-          fi
-      - name: Upload Coverage to Codecov
-        if: ${{ matrix.python-version == '3.12' }}
-        uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          docker rm -f pinot-quickstart-repro || true

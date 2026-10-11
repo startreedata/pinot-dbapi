@@ -168,7 +168,6 @@ def extract_table_name(fqn):
     return fqn if len(split) == 1 else split[1]
 
 
-
 class PinotAsyncAdaptDBAPIModule:
     def __init__(self, dbapi_module):
         self._dbapi_module = dbapi_module
@@ -398,7 +397,8 @@ class PinotDialect(default.DefaultDialect):
             else None
         )
         logger.info(
-            "Updated pinot dialect options: debug=%s, verify_ssl=%s, timeout=%s, database_set=%s",
+            "Updated pinot dialect options: debug=%s, verify_ssl=%s, "
+            "timeout=%s, database_set=%s",
             self._debug,
             self._verify_ssl,
             self._timeout,

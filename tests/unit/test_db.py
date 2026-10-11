@@ -1,5 +1,7 @@
+import asyncio
 import datetime
 import gc
+import threading
 import uuid
 import weakref
 from typing import Any, Dict, Optional
@@ -7,6 +9,7 @@ from unittest import TestCase
 from unittest.mock import ANY, MagicMock, patch
 
 import httpx
+import pytest
 
 try:
     from unittest import IsolatedAsyncioTestCase
@@ -407,6 +410,89 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
         connection = db.connect_async()
 
         self.assertIsInstance(connection, db.AsyncConnection)
+
+
+def _close_connection(connection):
+    if isinstance(connection, db.AsyncConnection):
+        asyncio.run(connection.close())
+    else:
+        connection.close()
+
+
+@pytest.mark.parametrize('connection_class,cursor_class', [
+    (db.Connection, db.Cursor),
+    (db.AsyncConnection, db.AsyncCursor),
+])
+def test_closes_cursor_created_during_connection_close(
+        connection_class, cursor_class):
+    connection = connection_class(host='localhost', verify_ssl=True)
+    initial_cursor = connection.cursor()
+    session = connection.session
+    constructor_entered = threading.Event()
+    release_constructor = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    created_cursors = []
+    errors = []
+
+    def delayed_constructor(*args, **kwargs):
+        cursor = cursor_class(*args, **kwargs)
+        constructor_entered.set()
+        assert release_constructor.wait(5), 'cursor constructor timed out'
+        return cursor
+
+    def create_cursor():
+        try:
+            created_cursors.append(connection.cursor())
+        except Exception as error:
+            errors.append(error)
+
+    def close_connection():
+        try:
+            close_started.set()
+            _close_connection(connection)
+        except Exception as error:
+            errors.append(error)
+        finally:
+            close_finished.set()
+
+    creator = threading.Thread(target=create_cursor, daemon=True)
+    closer = threading.Thread(target=close_connection, daemon=True)
+    try:
+        with patch.object(db, cursor_class.__name__,
+                          side_effect=delayed_constructor):
+            creator.start()
+            try:
+                assert constructor_entered.wait(5), 'cursor did not start'
+                closer.start()
+                assert close_started.wait(5), 'connection close did not start'
+                # Let close progress while the cursor is still being created.
+                closed_during_construction = close_finished.wait(0.2)
+            finally:
+                release_constructor.set()
+                creator.join(5)
+                if closer.ident is not None:
+                    closer.join(5)
+
+        assert not creator.is_alive()
+        assert not closer.is_alive()
+        assert not errors
+        assert len(created_cursors) == 1
+        assert initial_cursor.closed
+        assert created_cursors[0].closed
+        assert connection.closed
+        assert session.is_closed
+        assert not closed_during_construction
+
+        with pytest.raises(exceptions.Error, match='already closed'):
+            connection.cursor()
+
+        assert connection.session is session
+    finally:
+        if isinstance(session, httpx.AsyncClient):
+            asyncio.run(session.aclose())
+        else:
+            session.close()
 
 
 class CursorTest(TestCase):

@@ -1,5 +1,6 @@
 import asyncio
 from functools import wraps
+from threading import Lock
 from typing import Any
 from weakref import WeakSet
 
@@ -171,6 +172,7 @@ class Connection:
         self.use_multistage_engine = kwargs.get('use_multistage_engine', False)
         self.query_options = kwargs.get('query_options', None)
         self.cursors = WeakSet()
+        self._lock = Lock()
         self.session = kwargs.get('session')
         self.is_session_external = False
         if self.session:
@@ -184,8 +186,7 @@ class Connection:
     @check_closed
     def close(self):
         """Close the connection now."""
-        self.closed = True
-        for cursor in self.cursors:
+        for cursor in self._close_cursors():
             try:
                 cursor.close()
             except exceptions.Error:
@@ -193,6 +194,14 @@ class Connection:
         # if we're managing the httpx session, attempt to close it
         if not self.is_session_external and self.session:
             self.session.close()
+
+    def _close_cursors(self):
+        with self._lock:
+            if self.closed:
+                raise exceptions.Error(
+                    f"{self.__class__.__name__} already closed")
+            self.closed = True
+            return list(self.cursors)
 
     @check_closed
     def commit(self):
@@ -203,9 +212,13 @@ class Connection:
         """
         pass
 
-    @check_closed
     def cursor(self):
         """Return a new Cursor Object using the connection."""
+        with self._lock:
+            return self._cursor()
+
+    @check_closed
+    def _cursor(self):
         if not self.session or self.session.is_closed:
             self.session = httpx.Client(
                 verify=self._kwargs.get('verify_ssl'),
@@ -242,7 +255,7 @@ class AsyncConnection(Connection):
             assert isinstance(self.session, httpx.AsyncClient)
 
     @check_closed
-    def cursor(self):
+    def _cursor(self):
         """Return a new Cursor Object using the connection."""
         if not self.session or self.session.is_closed:
             self.session = httpx.AsyncClient(
@@ -264,9 +277,8 @@ class AsyncConnection(Connection):
     @check_closed
     async def close(self):
         """Close the connection now."""
-        self.closed = True
         close_reqs = []
-        for cursor in self.cursors:
+        for cursor in self._close_cursors():
             try:
                 close_reqs.append(cursor.close())
             except exceptions.Error:

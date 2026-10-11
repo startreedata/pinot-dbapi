@@ -1,10 +1,15 @@
+import asyncio
 import datetime
+import gc
+import threading
 import uuid
+import weakref
 from typing import Any, Dict, Optional
 from unittest import TestCase
 from unittest.mock import ANY, MagicMock, patch
 
 import httpx
+import pytest
 
 try:
     from unittest import IsolatedAsyncioTestCase
@@ -115,6 +120,34 @@ class ConnectionTest(TestCase):
             self.assertTrue(cursor2.closed)
             self.assertFalse(session.is_closed)
 
+    def test_doesnt_retain_closed_cursor_results(self):
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={
+                'numServersResponded': 1, 'numServersQueried': 1,
+                'resultTable': {
+                    'dataSchema': {
+                        'columnNames': ['value'],
+                        'columnDataTypes': ['STRING']},
+                    'rows': [['value']]}}))
+        with httpx.Client(transport=transport) as session:
+            connection = db.Connection(host='localhost', session=session)
+            live_cursors = [connection.cursor(), connection.cursor()]
+            try:
+                cursor = connection.cursor()
+                cursor.execute('SELECT value FROM example')
+                self.assertEqual(cursor._results, [['value']])
+                cursor_ref = weakref.ref(cursor)
+                cursor.close()
+                del cursor
+                gc.collect()
+
+                self.assertIsNone(cursor_ref())
+            finally:
+                connection.close()
+
+            self.assertTrue(all(cursor.closed for cursor in live_cursors))
+            self.assertFalse(session.is_closed)
+
     def test_starts_not_closed(self):
         connection = db.Connection(
             host='localhost', session=MagicMock(spec=httpx.Client))
@@ -220,6 +253,23 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
         self.assertIsNone(connection.session)
         self.assertFalse(connection.is_session_external)
 
+    async def test_closes_connection_without_a_cursor(self):
+        connection = db.AsyncConnection()
+
+        await connection.close()
+
+        self.assertTrue(connection.closed)
+
+    async def test_rejects_second_pending_close(self):
+        connection = db.AsyncConnection()
+        first_close = connection.close()
+        second_close = connection.close()
+
+        await first_close
+
+        with self.assertRaisesRegex(exceptions.Error, 'already closed'):
+            await second_close
+
     def test_verifies_httpx_session_upon_initializing_if_provided(self):
         client = httpx.AsyncClient()
 
@@ -274,6 +324,34 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
                 await connection.close()
 
             self.assertTrue(cursor2.closed)
+            self.assertFalse(session.is_closed)
+
+    async def test_doesnt_retain_closed_cursor_results(self):
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={
+                'numServersResponded': 1, 'numServersQueried': 1,
+                'resultTable': {
+                    'dataSchema': {
+                        'columnNames': ['value'],
+                        'columnDataTypes': ['STRING']},
+                    'rows': [['value']]}}))
+        async with httpx.AsyncClient(transport=transport) as session:
+            connection = db.AsyncConnection(host='localhost', session=session)
+            live_cursors = [connection.cursor(), connection.cursor()]
+            try:
+                cursor = connection.cursor()
+                await cursor.execute('SELECT value FROM example')
+                self.assertEqual(cursor._results, [['value']])
+                cursor_ref = weakref.ref(cursor)
+                await cursor.close()
+                del cursor
+                gc.collect()
+
+                self.assertIsNone(cursor_ref())
+            finally:
+                await connection.close()
+
+            self.assertTrue(all(cursor.closed for cursor in live_cursors))
             self.assertFalse(session.is_closed)
 
     async def test_renews_session_if_closed_when_getting_cursor(self):
@@ -342,6 +420,89 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
         connection = db.connect_async()
 
         self.assertIsInstance(connection, db.AsyncConnection)
+
+
+def _close_connection(connection):
+    if isinstance(connection, db.AsyncConnection):
+        asyncio.run(connection.close())
+    else:
+        connection.close()
+
+
+@pytest.mark.parametrize('connection_class,cursor_class', [
+    (db.Connection, db.Cursor),
+    (db.AsyncConnection, db.AsyncCursor),
+])
+def test_closes_cursor_created_during_connection_close(
+        connection_class, cursor_class):
+    connection = connection_class(host='localhost', verify_ssl=True)
+    initial_cursor = connection.cursor()
+    session = connection.session
+    constructor_entered = threading.Event()
+    release_constructor = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    created_cursors = []
+    errors = []
+
+    def delayed_constructor(*args, **kwargs):
+        cursor = cursor_class(*args, **kwargs)
+        constructor_entered.set()
+        assert release_constructor.wait(5), 'cursor constructor timed out'
+        return cursor
+
+    def create_cursor():
+        try:
+            created_cursors.append(connection.cursor())
+        except Exception as error:
+            errors.append(error)
+
+    def close_connection():
+        try:
+            close_started.set()
+            _close_connection(connection)
+        except Exception as error:
+            errors.append(error)
+        finally:
+            close_finished.set()
+
+    creator = threading.Thread(target=create_cursor, daemon=True)
+    closer = threading.Thread(target=close_connection, daemon=True)
+    try:
+        with patch.object(db, cursor_class.__name__,
+                          side_effect=delayed_constructor):
+            creator.start()
+            try:
+                assert constructor_entered.wait(5), 'cursor did not start'
+                closer.start()
+                assert close_started.wait(5), 'connection close did not start'
+                # Let close progress while the cursor is still being created.
+                closed_during_construction = close_finished.wait(0.2)
+            finally:
+                release_constructor.set()
+                creator.join(5)
+                if closer.ident is not None:
+                    closer.join(5)
+
+        assert not creator.is_alive()
+        assert not closer.is_alive()
+        assert not errors
+        assert len(created_cursors) == 1
+        assert initial_cursor.closed
+        assert created_cursors[0].closed
+        assert connection.closed
+        assert session.is_closed
+        assert not closed_during_construction
+
+        with pytest.raises(exceptions.Error, match='already closed'):
+            connection.cursor()
+
+        assert connection.session is session
+    finally:
+        if isinstance(session, httpx.AsyncClient):
+            asyncio.run(session.aclose())
+        else:
+            session.close()
 
 
 class CursorTest(TestCase):

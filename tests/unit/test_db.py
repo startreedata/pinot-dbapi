@@ -260,6 +260,16 @@ class AsyncConnectionTest(IsolatedAsyncioTestCase):
 
         self.assertTrue(connection.closed)
 
+    async def test_rejects_second_pending_close(self):
+        connection = db.AsyncConnection()
+        first_close = connection.close()
+        second_close = connection.close()
+
+        await first_close
+
+        with self.assertRaisesRegex(exceptions.Error, 'already closed'):
+            await second_close
+
     def test_verifies_httpx_session_upon_initializing_if_provided(self):
         client = httpx.AsyncClient()
 

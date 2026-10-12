@@ -242,10 +242,16 @@ def dimension_health(phase):
 
 
 def dimension_lookup():
-    sql = ("select lookup('dimBaseballTeams', 'teamName', 'teamID', leftSubStr(teamID, 2)) AS teamName "
-           "from baseballStats where teamID LIKE 'SF%' limit 1")
+    queries = {
+        "false": ("select lookup('dimBaseballTeams', 'teamName', 'teamID', leftSubStr(teamID, 2)) AS teamName "
+                  "from baseballStats where teamID LIKE 'SF%' limit 1"),
+        "true": ("select /*+ joinOptions(join_strategy='lookup') */ d.teamName "
+                 "from (select leftSubStr(teamID, 2) AS dimKey from baseballStats where teamID LIKE 'SF%') b "
+                 "join dimBaseballTeams d on b.dimKey = d.teamID limit 1"),
+    }
+    (EVIDENCE / "dimension-lookup-queries.json").write_text(json.dumps(queries, indent=2))
     results = {}
-    for engine in ("false", "true"):
+    for engine, sql in queries.items():
         body = command(["curl", "--fail", "--silent", "--show-error", "--max-time", "30",
                         "-H", "Content-Type: application/json", "-d",
                         json.dumps({"sql": sql, "queryOptions": f"useMultistageEngine={engine}"}),

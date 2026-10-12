@@ -205,7 +205,10 @@ def assert_evidence(mode):
         assert primary, "Missing first pre-serve failure from Pinot file logs"
         primary = primary.group(0)
         assert "org.apache.pinot.query.service.server.QueryServer.start(" in primary, primary
-        assert "java.net.BindException: Address already in use" in primary, primary
+        bind_errors = ("java.net.BindException: Address already in use",
+                       "io.grpc.netty.shaded.io.netty.channel.unix.Errors$NativeIoException: "
+                       "bind(..) failed with error(-98): Address already in use")
+        assert any(error in primary for error in bind_errors), primary
         assert re.search(rf"Failed to bind to address[^\n]*:{agent['port']}\b", primary), primary
         (EVIDENCE / "mse-bind-failure.txt").write_text(primary)
         seen = next(index for index, row in enumerate(samples) if has_190(row["body"]))

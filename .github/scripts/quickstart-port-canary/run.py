@@ -103,15 +103,24 @@ def prepare(mode):
         source_bytes = response.read()
     source = source_bytes.decode()
     patched, diff = source_overlay(source)
+    # The image's Maven shade step relocated Jackson in both the class and its API.
+    # Compile with that existing namespace; retain the unshaded six-line source diff.
+    original_import = "import com.fasterxml.jackson.databind.JsonNode;"
+    shaded_import = "import org.apache.pinot.shaded.com.fasterxml.jackson.databind.JsonNode;"
+    assert patched.count(original_import) == 1, "Unexpected Jackson source import"
+    compiled_source = patched.replace(original_import, shaded_import)
     build = EVIDENCE / "build"
     build.mkdir()
     (build / "QuickstartRunner.base.java").write_bytes(source_bytes)
-    (build / "QuickstartRunner.java").write_text(patched)
+    (build / "QuickstartRunner.port-fix.java").write_text(patched)
+    (build / "QuickstartRunner.java").write_text(compiled_source)
     (build / "QuickstartRunner.patch").write_text(diff)
     identity = {"image": IMAGE, "implementation_version": version.group(1),
                 "source_commit": revision, "source_url": url,
                 "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
-                "patched_source_sha256": hashlib.sha256(patched.encode()).hexdigest()}
+                "patched_source_sha256": hashlib.sha256(patched.encode()).hexdigest(),
+                "compiled_source_sha256": hashlib.sha256(compiled_source.encode()).hexdigest(),
+                "distribution_import_relocation": {"from": original_import, "to": shaded_import}}
     (EVIDENCE / "identity.json").write_text(json.dumps(identity, indent=2))
     print(json.dumps(identity, indent=2), flush=True)
     shutil.copy(SCRIPT / "PortRaceAgent.java", build)

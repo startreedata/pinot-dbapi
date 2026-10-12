@@ -36,6 +36,8 @@ import xml.etree.ElementTree as ET
 
 
 IMAGE = "apachepinot/pinot@sha256:6ff4820a24f18adbd90eac465f501c55dec787d2ba4d582310b9384c7f8d1b5b"
+FIX_COMMIT = "409f57823386bd0f7c8e4e3ee8d5ca14b4327c29"
+FIX_BASE = "dd2c3cdfac918e18a20ef20cfd2a55eb868d2054"
 SCRIPT = Path(__file__).resolve().parent
 EVIDENCE = Path("quickstart-port-canary").resolve()
 CONTAINER = "pinot-port-canary"
@@ -80,6 +82,40 @@ def source_overlay(source):
     return patched, "".join(diff)
 
 
+def read_source(repository, revision, path):
+    url = f"https://raw.githubusercontent.com/{repository}/{revision}/{path}"
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return response.read(), url
+
+
+def dimension_overlay(build, revision):
+    assert re.fullmatch(r"[0-9a-f]{40}", FIX_COMMIT), "Candidate must be an immutable reviewed commit"
+    files = []
+    for path in ("pinot-core/src/main/java/org/apache/pinot/core/data/manager/offline/"
+                 "DimensionTableDataManager.java",
+                 "pinot-core/src/main/java/org/apache/pinot/core/data/manager/provider/"
+                 "DefaultTableDataManagerProvider.java"):
+        original, original_url = read_source("apache/pinot", revision, path)
+        upstream_base, _ = read_source("apache/pinot", FIX_BASE, path)
+        assert original == upstream_base, f"Candidate base differs from pinned image source: {path}"
+        candidate, candidate_url = read_source("xiangfu0/pinot", FIX_COMMIT, path)
+        assert candidate != original, f"Missing reviewed dimension fix: {path}"
+        name = Path(path).name
+        source = candidate.decode()
+        compiled = source.replace("import com.google.common.",
+                                  "import org.apache.pinot.shaded.com.google.common.")
+        (build / (name + ".base")).write_bytes(original)
+        (build / (name + ".candidate")).write_bytes(candidate)
+        (build / name).write_text(compiled)
+        (build / (name + ".patch")).write_text("".join(difflib.unified_diff(
+            original.decode().splitlines(True), source.splitlines(True), "base/" + path, "candidate/" + path)))
+        files.append({"path": path, "original_url": original_url, "candidate_url": candidate_url,
+                      "original_sha256": hashlib.sha256(original).hexdigest(),
+                      "candidate_sha256": hashlib.sha256(candidate).hexdigest(),
+                      "compiled_sha256": hashlib.sha256(compiled.encode()).hexdigest()})
+    return {"commit": FIX_COMMIT, "base": FIX_BASE, "files": files}
+
+
 def prepare(mode):
     command(["docker", "pull", IMAGE], "pull.log")
     original = json.loads(command(["docker", "image", "inspect", IMAGE]))[0]
@@ -115,12 +151,18 @@ def prepare(mode):
     (build / "QuickstartRunner.port-fix.java").write_text(patched)
     (build / "QuickstartRunner.java").write_text(compiled_source)
     (build / "QuickstartRunner.patch").write_text(diff)
+    dimension_fix = dimension_overlay(build, revision)
+    candidate_runner, _ = read_source("xiangfu0/pinot", FIX_COMMIT,
+                                     "pinot-tools/src/main/java/org/apache/pinot/tools/admin/command/"
+                                     "QuickstartRunner.java")
+    assert candidate_runner == patched.encode(), "Canary port overlay differs from reviewed candidate"
     identity = {"image": IMAGE, "implementation_version": version.group(1),
                 "source_commit": revision, "source_url": url,
                 "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
                 "patched_source_sha256": hashlib.sha256(patched.encode()).hexdigest(),
                 "compiled_source_sha256": hashlib.sha256(compiled_source.encode()).hexdigest(),
-                "distribution_import_relocation": {"from": original_import, "to": shaded_import}}
+                "distribution_import_relocation": {"from": original_import, "to": shaded_import},
+                "dimension_scope_fix": dimension_fix}
     (EVIDENCE / "identity.json").write_text(json.dumps(identity, indent=2))
     print(json.dumps(identity, indent=2), flush=True)
     shutil.copy(SCRIPT / "PortRaceAgent.java", build)
@@ -180,6 +222,41 @@ def retain():
         (EVIDENCE / name).write_text(result.stdout)
 
 
+def dimension_health(phase):
+    samples = []
+    deadline = time.monotonic() + 120
+    while True:
+        body = command(["curl", "--fail", "--silent", "--show-error", "--max-time", "10",
+                        "http://localhost:9000/tables/dimBaseballTeams/externalview?tableType=OFFLINE"])
+        view = json.loads(body).get("OFFLINE", {})
+        samples.append({"time": time.time(), "view": view})
+        (EVIDENCE / f"dimension-{phase}.json").write_text(json.dumps(samples, indent=2))
+        healthy = bool(view) and all(
+            len(states) == 3 and sorted(server.rsplit("_", 1)[-1] for server in states) ==
+            ["7050", "7051", "7052"] and set(states.values()) == {"ONLINE"}
+            for states in view.values())
+        if healthy:
+            return
+        assert time.monotonic() < deadline, f"Dimension replicas did not become ONLINE: {view}"
+        time.sleep(2)
+
+
+def dimension_lookup():
+    sql = ("select lookup('dimBaseballTeams', 'teamName', 'teamID', leftSubStr(teamID, 2)) AS teamName "
+           "from baseballStats where teamID LIKE 'SF%' limit 1")
+    results = {}
+    for engine in ("false", "true"):
+        body = command(["curl", "--fail", "--silent", "--show-error", "--max-time", "30",
+                        "-H", "Content-Type: application/json", "-d",
+                        json.dumps({"sql": sql, "queryOptions": f"useMultistageEngine={engine}"}),
+                        "http://localhost:8000/query/sql"])
+        parsed = json.loads(body)
+        results[engine] = parsed
+        (EVIDENCE / "dimension-lookup.json").write_text(json.dumps(results, indent=2))
+        assert not parsed.get("exceptions"), parsed
+        assert parsed["resultTable"]["rows"] == [["San Francisco Giants"]], parsed
+
+
 def assert_evidence(mode):
     state = json.loads((EVIDENCE / "container.json").read_text())[0]["State"]
     agent = dict(line.split("=", 1) for line in (EVIDENCE / "agent.properties").read_text().splitlines())
@@ -223,6 +300,13 @@ def assert_evidence(mode):
         assert [(row["netty"], row["plan"], row["mailbox"]) for row in servers] == \
             [(7050 + i, 7200 + i, 7300 + i) for i in range(3)]
         assert [row["mailbox"] for row in ports if row["role"] == "BROKER"] == [8030]
+        file_logs = "\n".join(path.read_text(errors="replace")
+                              for path in (EVIDENCE / "pinot-logs").glob("*.log"))
+        blocks = re.split(r"(?m)(?=^\d{4}[-/]\d{2}[-/]\d{2})", file_logs)
+        assert not any("dimBaseballTeams" in block and any(error in block for error in
+                       ("Unable to create index directory", "is not a directory",
+                        "Maximum permit count exceeded")) for block in blocks), \
+            "Dimension manager directory or permit failure remains"
         counts = {}
         for table in TABLES:
             body = command(["curl", "--fail", "--silent", "--show-error", "--max-time", "10",
@@ -281,9 +365,12 @@ def main():
         else:
             env = dict(os.environ, CONTROLLER_PORT_FORWARD="9000", BROKER_PORT_FORWARD="8000")
             command(["bash", ".github/scripts/setup_python_test_env.sh"], "setup.log", env)
+            dimension_health("before-integration")
             env["PYTEST_ADDOPTS"] = (env.get("PYTEST_ADDOPTS", "")
                                      + f" --junitxml={EVIDENCE / 'integration.xml'}").strip()
             command(["make", "test-integration"], "integration.log", env)
+            dimension_lookup()
+            dimension_health("after-integration")
         stop.set()
         monitor.join(timeout=5)
         assert not monitor.is_alive(), "Host probe did not finish"

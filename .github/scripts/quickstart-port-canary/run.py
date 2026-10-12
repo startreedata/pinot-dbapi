@@ -198,6 +198,16 @@ def assert_evidence(mode):
         servers = [row for row in ports if row["role"] == "SERVER"]
         assert len(servers) == 1 and servers[0]["netty"] == 7050
         assert servers[0]["plan"] == int(agent["port"]), "Fault did not target the first server MSE port"
+        file_logs = "\n".join(path.read_text(errors="replace")
+                              for path in (EVIDENCE / "pinot-logs").glob("*.log"))
+        primary = re.search(r"Caught exception while pre-serving queries,[\s\S]*?"
+                            r"(?=\n\d{4}[-/]\d{2}[-/]\d{2}|\Z)", file_logs)
+        assert primary, "Missing first pre-serve failure from Pinot file logs"
+        primary = primary.group(0)
+        assert "org.apache.pinot.query.service.server.QueryServer.start(" in primary, primary
+        assert "java.net.BindException: Address already in use" in primary, primary
+        assert re.search(rf"Failed to bind to address[^\n]*:{agent['port']}\b", primary), primary
+        (EVIDENCE / "mse-bind-failure.txt").write_text(primary)
         seen = next(index for index, row in enumerate(samples) if has_190(row["body"]))
         assert any(not row["body"] and row["curl_exit"] != 0 for row in samples[seen + 1:]), \
             "Expected broker 190 followed by empty failed curl"
@@ -246,8 +256,11 @@ def main():
         existing = next((item.split("=", 1)[1] for item in original["Config"]["Env"]
                          if item.startswith("JAVA_TOOL_OPTIONS=")), "")
         tool_options = (existing + " -javaagent:/canary/port-race-agent.jar=/evidence").strip()
+        # Keep WARN stacks in the existing file appender; the console filters them out.
+        (EVIDENCE / "pinot-logs").mkdir()
         command(["docker", "create", "--name", CONTAINER, "--publish", "9000:9000",
                  "--publish", "8000:8000", "--volume", f"{EVIDENCE}:/evidence",
+                 "--env", "LOG_ROOT=/evidence/pinot-logs", "--env", "PINOT_COMPONENT=all",
                  "--env", f"JAVA_TOOL_OPTIONS={tool_options}", tag, "QuickStart", "-type", "MULTI_STAGE"])
         event_log = open(EVIDENCE / "docker-events.jsonl", "w")
         events = subprocess.Popen(["docker", "events", "--filter", f"container={CONTAINER}",

@@ -1457,4 +1457,4 @@ sqlalchemy = ["greenlet", "requests", "sqlalchemy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4"
-content-hash = "621086950c7d29b61e2a8610c08d0fbad7b17c398d2f68c36a4263357b56ddca"
+content-hash = "ec8a49d14235ea4775f5b8fa9d2d18d0edecc6ad09c8d47000b1072991a0ef8a"

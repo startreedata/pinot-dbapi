@@ -34,7 +34,13 @@ flake8 = ">=5,<8"
 mock = ">=4.0.3,<6.0.0"
 responses = ">=0.22,<0.27"
 ipdb = "^0.13.13"
-filelock = ">=3.20.1,<5.0.0"
+# filelock is intentionally NOT declared as a direct dependency. It is only
+# pulled in transitively by tox/virtualenv (dev tooling) and is not imported
+# anywhere in pinotdb. The 2026-10 filelock advisories affect every release
+# <= 4.2.0; the first non-vulnerable release (4.2.1) requires Python >= 3.11,
+# so it cannot be installed while pinotdb supports Python 3.10. A direct pin
+# here only makes Dependabot's security updater fail every run with
+# "security_update_not_possible" without improving the installed version.
 
 [tool.pytest.ini_options]
 addopts = "--cov=pinotdb --cov-branch"
